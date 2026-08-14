@@ -7,3 +7,9 @@ httpx==0.28.1
 PyJWT==2.10.1
 python-multipart==0.0.20
 openpyxl==3.1.5
+tzdata
+openai==1.109.1
+livekit-agents[openai]~=1.2
+livekit-api
+livekit-plugins-noise-cancellation~=0.2
+twilio

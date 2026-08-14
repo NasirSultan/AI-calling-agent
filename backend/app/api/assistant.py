@@ -1,8 +1,10 @@
-from fastapi import APIRouter, Depends
+import json
+import uuid
+from fastapi import APIRouter, Depends, HTTPException
+from livekit import api
 from sqlalchemy.orm import Session
 from app.config.database import get_db
 from app.config.settings import settings
-from app.services.assistant_prompt import build_assistant
 from app.services.lead_service import get_or_reset_test_lead
 from app.utils.security import require_admin
 
@@ -10,25 +12,45 @@ router = APIRouter(prefix="/api/assistant", tags=["assistant"], dependencies=[De
 
 
 @router.get("/preview")
-def preview_assistant(db: Session = Depends(get_db)):
-    # Reuse a single fixed "Malaika" lead so a browser test call goes through the exact
-    # same webhook -> qualification pipeline as a real call, letting you verify data
+async def preview_assistant(db: Session = Depends(get_db)):
+    # Reuse a single fixed "Nasir Sultan" lead so a browser test call goes through the exact
+    # same agent -> qualification pipeline as a real call, letting you verify data
     # actually lands in the database (check /leads/<test_lead_id> after the call) —
     # reset to a clean pending state on every preview fetch so stale data from a
     # previous test doesn't linger.
+    if not (settings.livekit_url and settings.livekit_api_key and settings.livekit_api_secret):
+        raise HTTPException(status_code=400, detail="LiveKit is not configured (LIVEKIT_URL/API_KEY/API_SECRET)")
+
     test_lead = get_or_reset_test_lead(db)
-    assistant = build_assistant(test_lead.full_name)
-    if not settings.vapi_server_url:
-        # No webhook URL configured at all — nothing would receive the end-of-call
-        # report anyway, so there's no point keeping metadata/server wired up.
-        assistant.pop("server", None)
+    room_name = f"preview-{test_lead.id}-{uuid.uuid4().hex[:8]}"
+    metadata = {"lead_id": test_lead.id, "full_name": test_lead.full_name or ""}
+
+    lkapi = api.LiveKitAPI(
+        url=settings.livekit_url, api_key=settings.livekit_api_key, api_secret=settings.livekit_api_secret
+    )
+    try:
+        await lkapi.agent_dispatch.create_dispatch(
+            api.CreateAgentDispatchRequest(
+                agent_name=settings.livekit_agent_name,
+                room=room_name,
+                metadata=json.dumps(metadata),
+            )
+        )
+    finally:
+        await lkapi.aclose()
+
+    identity = f"browser-{test_lead.id}"
+    token = (
+        api.AccessToken(settings.livekit_api_key, settings.livekit_api_secret)
+        .with_identity(identity)
+        .with_name(test_lead.full_name or "Test caller")
+        .with_grants(api.VideoGrants(room_join=True, room=room_name))
+        .to_jwt()
+    )
+
     return {
-        "assistant": assistant,
-        # When set, the test page starts the call with this saved assistant ID (same
-        # path real phone calls take) instead of the inline assistant above. Note the
-        # Malaika email read-back override in build_assistant() can't be injected into
-        # a saved assistant, so it doesn't apply in that mode.
-        "assistant_id": settings.vapi_assistant_id or None,
-        "public_key": settings.vapi_public_key,
+        "livekit_url": settings.livekit_url,
+        "token": token,
+        "room_name": room_name,
         "test_lead_id": test_lead.id,
     }

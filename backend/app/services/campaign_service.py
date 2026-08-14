@@ -81,7 +81,7 @@ def pick_next_leads(db: Session, limit: int) -> list[Lead]:
         db.query(Lead)
         .filter(
             Lead.dnc.is_(False),
-            Lead.phone != TEST_LEAD_PHONE,  # the reusable "Malaika" fixture for the Test Call page, never a real lead
+            Lead.phone != TEST_LEAD_PHONE,  # the reusable "Nasir Sultan" fixture for the Test Call page, never a real lead
             or_(
                 Lead.status == LeadStatus.pending,
                 (Lead.status == LeadStatus.no_answer) & (Lead.next_retry_at <= now),

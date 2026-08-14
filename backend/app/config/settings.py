@@ -18,6 +18,22 @@ class Settings(BaseSettings):
     vapi_webhook_secret: str = ""
     vapi_server_url: str = ""
 
+    # LiveKit (WebRTC room infra + SIP dial-out) + the OpenAI Realtime model that
+    # runs inside the agent worker (app/livekit_agent.py).
+    openai_api_key: str = ""
+    livekit_url: str = ""
+    livekit_api_key: str = ""
+    livekit_api_secret: str = ""
+    livekit_sip_trunk_id: str = ""
+    livekit_agent_name: str = "nit-reactivation-agent"
+
+    # Twilio: only needed to run `python -m app.twilio_setup` once to provision the
+    # outbound SIP trunk; not read at normal app runtime.
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_phone_number: str = ""
+    twilio_trunk_domain: str = ""
+
     crm_webhook_url: str = ""
 
     calling_start_hour: int = 10

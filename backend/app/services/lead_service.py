@@ -126,7 +126,7 @@ def get_or_reset_test_lead(db: Session) -> Lead:
     if not lead:
         lead = Lead(phone=TEST_LEAD_PHONE)
         db.add(lead)
-    lead.full_name = "Malaika"
+    lead.full_name = "Nasir Sultan"
     lead.status = LeadStatus.pending
     lead.retry_count = 0
     lead.next_retry_at = None

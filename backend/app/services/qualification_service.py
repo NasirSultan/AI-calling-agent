@@ -14,72 +14,68 @@ NO_ANSWER_REASONS = {
     "no-answer",
     "voicemail",
     "twilio-failed-to-connect-call",
+    "no_answer",  # livekit_service.classify_dial_error bucket
 }
-INVALID_REASONS = {"invalid-phone-number", "call-forwarding-not-supported"}
+INVALID_REASONS = {
+    "invalid-phone-number",
+    "call-forwarding-not-supported",
+    "invalid",  # livekit_service.classify_dial_error bucket
+}
 
 
-def _extract_structured_output(artifact: dict) -> dict:
-    """artifact.structuredOutputs is keyed by structured-output ID (we only ever
-    create one, via structured_output_service.py), and Vapi's exact nesting of the
-    extracted fields under that key isn't documented — handle both "value is the
-    flat data dict directly" and "value wraps it under a result/output/data key"."""
-    outputs = artifact.get("structuredOutputs") or {}
-    if not outputs:
-        return {}
-    value = next(iter(outputs.values()), {}) or {}
-    for nested_key in ("result", "output", "data"):
-        if isinstance(value.get(nested_key), dict):
-            return value[nested_key]
-    return value
+def mark_dispatch_failed(db: Session, lead: Lead) -> None:
+    """For failures before/during agent dispatch itself (dialer_worker.py's outer
+    except branch) — no agent job was ever created in this case, so there's no
+    shutdown callback to write the outcome instead; the dialer must do it directly.
+    Never call this for a SIP-dial failure after dispatch already succeeded (see
+    livekit_service.CallSetupError) — the agent's own callback owns that case."""
+    lead.status = LeadStatus.failed
+    db.commit()
 
 
-def process_call_result(db: Session, message: dict) -> None:
-    call_data = message.get("call", {}) or {}
-    vapi_call_id = call_data.get("id")
-    # Real phone calls (vapi_service.start_call) put metadata directly on the call via
-    # Vapi's REST API, landing at call.metadata. Browser web calls (TestCall.jsx) pass
-    # it via assistantOverrides.metadata instead, since the web SDK's start() has no
-    # call-level metadata parameter — Vapi stores that under call.assistantOverrides.metadata
-    # rather than call.metadata. Check both so either call path can be linked to a lead.
-    metadata = call_data.get("metadata") or (call_data.get("assistantOverrides") or {}).get("metadata") or {}
-    lead_id = metadata.get("lead_id")
-    if not lead_id:
-        return
+def process_call_result(
+    db: Session,
+    lead_id: int,
+    room_name: str,
+    ended_reason: str,
+    transcript: str,
+    structured: dict,
+    duration_seconds: float | None = None,
+    recording_url: str | None = None,
+) -> None:
+    """Called directly by app/livekit_agent.py's shutdown callback with already-
+    extracted data (no webhook payload to parse — the agent process is the sole
+    source of truth for anything that reaches a dispatched room)."""
     lead = db.query(Lead).filter(Lead.id == lead_id).first()
     if not lead:
         return
 
-    call = db.query(Call).filter(Call.vapi_call_id == vapi_call_id).first()
+    call = db.query(Call).filter(Call.room_name == room_name).first()
     if not call:
-        call = Call(lead_id=lead.id, vapi_call_id=vapi_call_id)
+        call = Call(lead_id=lead.id, room_name=room_name)
         db.add(call)
 
-    ended_reason = message.get("endedReason") or call_data.get("endedReason") or ""
-    artifact = message.get("artifact", {}) or {}
-    structured = _extract_structured_output(artifact)
-
-    if not structured:
-        logger.warning(
-            "No structuredOutputs in artifact for lead_id=%d (vapi_call_id=%s) — "
-            "raw artifact.structuredOutputs=%r. Falling back to no-answer handling.",
-            lead.id, vapi_call_id, artifact.get("structuredOutputs"),
-        )
-    else:
+    if structured:
         found = {k: v for k, v in structured.items() if v not in (None, "", False)}
         logger.info("structuredOutputs found for lead_id=%d: %s", lead.id, found)
+    else:
+        logger.warning(
+            "No structured data for lead_id=%d (room_name=%s) — falling back to no-answer handling.",
+            lead.id, room_name,
+        )
 
     call.status = "ended"
     call.ended_reason = ended_reason
     call.ended_at = datetime.utcnow()
-    call.duration_seconds = message.get("durationSeconds")
-    call.recording_url = artifact.get("recordingUrl") or message.get("recordingUrl")
-    call.transcript = artifact.get("transcript") or message.get("transcript")
+    call.duration_seconds = duration_seconds
+    call.recording_url = recording_url
+    call.transcript = transcript
     call.extracted_data = structured
-    call.cost = message.get("cost")
+    call.cost = None
 
     logger.info(
-        "Full transcript for lead_id=%d (vapi_call_id=%s):\n%s",
-        lead.id, vapi_call_id, call.transcript or "(empty)",
+        "Full transcript for lead_id=%d (room_name=%s):\n%s",
+        lead.id, room_name, transcript or "(empty)",
     )
 
     # Extraction models can produce plausible-sounding structuredData even from a
@@ -87,14 +83,16 @@ def process_call_result(db: Session, message: dict) -> None:
     # still came back with detailed answers for every question). A transcript with
     # no "User:" turn at all means the caller never actually spoke, so nothing in
     # structured can be genuinely grounded — treat it as incomplete regardless of
-    # what was extracted, rather than trusting fabricated-looking data.
-    has_caller_speech = "User:" in (call.transcript or "")
+    # what was extracted, rather than trusting fabricated-looking data. (This is
+    # doubled up with livekit_agent.py's own caller_spoke check derived directly
+    # from AgentSession.history, done before extraction even runs.)
+    has_caller_speech = "User:" in (transcript or "")
     if structured and not has_caller_speech:
         logger.warning(
             "structuredOutputs present for lead_id=%d but transcript has no caller "
             "speech (likely fabricated, not grounded) — treating as no-answer. "
             "structured=%s transcript=%r",
-            lead.id, structured, call.transcript,
+            lead.id, structured, transcript,
         )
         structured = {}
 
@@ -103,7 +101,7 @@ def process_call_result(db: Session, message: dict) -> None:
     elif ended_reason in NO_ANSWER_REASONS:
         _handle_no_answer(lead)
     elif structured:
-        _apply_extracted_data(lead, structured, call.transcript or "")
+        _apply_extracted_data(lead, structured, transcript or "")
     else:
         _handle_no_answer(lead)
 

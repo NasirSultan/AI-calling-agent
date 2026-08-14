@@ -16,6 +16,7 @@ class TokenResponse(BaseModel):
 class CallOut(BaseModel):
     id: int
     vapi_call_id: Optional[str] = None
+    room_name: Optional[str] = None
     status: str
     ended_reason: Optional[str] = None
     duration_seconds: Optional[float] = None

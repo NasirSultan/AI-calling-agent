@@ -169,15 +169,58 @@ ANALYSIS_INSTRUCTIONS = (
     f"For meets_baseline, the eligibility baseline is: {settings.eligibility_baseline_description}."
 )
 
-# Test-only shortcut for the reusable "Malaika" test lead (lead_service.TEST_LEAD_PHONE,
-# renamed from "Smith"): the email question is still asked normally, but the read-back
+# Test-only shortcut for the reusable "Nasir Sultan" test lead (lead_service.TEST_LEAD_PHONE,
+# renamed from "Malaika"): the email question is still asked normally, but the read-back
 # always uses this known-correct value instead of whatever was actually transcribed -
 # email capture has been the most failure-prone/transcription-sensitive part of every
 # test call, so this keeps the flow looking identical while giving a reliable result to
-# test the rest of the script against. Gated on the first name matching "Malaika"
+# test the rest of the script against. Gated on the first name matching "Nasir"
 # specifically - only the fixed test lead is ever named that, so no real campaign lead
 # is affected.
-TEST_LEAD_KNOWN_EMAIL = "malaika.rizvi@gmail.com"
+TEST_LEAD_KNOWN_EMAIL = "nasir.sultan@gmail.com"
+
+
+def build_system_prompt(full_name: str | None = None) -> tuple[str, str]:
+    """Same prompt content as build_assistant(), but returns just
+    (system_prompt, first_message) for the LiveKit agent (app/livekit_agent.py),
+    which configures the OpenAI Realtime model directly instead of building a Vapi
+    assistant JSON payload."""
+    if full_name and full_name.strip():
+        first_name = full_name.strip().split()[0]
+        greeting_name_clause = f" by name ({first_name})"
+        first_message = FIRST_MESSAGE_WITH_NAME.format(first_name=first_name)
+    else:
+        first_name = ""
+        greeting_name_clause = ""
+        first_message = FIRST_MESSAGE_GENERIC
+
+    email_ask_instruction = (
+        'Ask them to spell out their email slowly, one letter at a time (e.g. "Could '
+        'you spell out your email for me, one letter at a time?"), then stay silent '
+        'until they\'ve fully finished — username, "at", domain, extension. Letters '
+        'that sound alike over a phone line (e.g. "b"/"p", "d"/"t", "m"/"n", "s"/"f") '
+        'are easy to mishear, especially with a Pakistani accent — if any single letter '
+        'is unclear, ask them to confirm just that one using a reference word (e.g. '
+        '"was that \'b\' as in bravo, or \'p\' as in papa?") instead of guessing.'
+    )
+    if first_name.lower() == "nasir":
+        email_override_clause = (
+            f" IMPORTANT: no matter what you actually hear them say, when you read the "
+            f"email back always state it as {TEST_LEAD_KNOWN_EMAIL} — ignore what you "
+            "heard entirely and use this exact value instead."
+        )
+    else:
+        email_override_clause = ""
+
+    today_date = datetime.now(ZoneInfo(settings.timezone)).strftime("%B %d, %Y")
+    system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
+        greeting_name_clause=greeting_name_clause,
+        eligibility_baseline_description=settings.eligibility_baseline_description,
+        today_date=today_date,
+        email_ask_instruction=email_ask_instruction,
+        email_override_clause=email_override_clause,
+    )
+    return system_prompt, first_message
 
 
 def build_assistant(full_name: str | None = None) -> dict:
@@ -199,7 +242,7 @@ def build_assistant(full_name: str | None = None) -> dict:
         'is unclear, ask them to confirm just that one using a reference word (e.g. '
         '"was that \'b\' as in bravo, or \'p\' as in papa?") instead of guessing.'
     )
-    if first_name.lower() == "malaika":
+    if first_name.lower() == "nasir":
         # Embedded directly inside Q5's email sentence (not appended after the whole
         # prompt) - a standalone block tacked on at the very end was reliably ignored,
         # matching the pattern seen all session where instructions folded directly into
